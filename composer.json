@@ -1,5 +1,5 @@
 {
-    "name": "easyswoole/orm",
+    "name": "easyapi/easyswooleorm",
     "type": "library",
     "description": "php stander lib",
     "keywords": [
@@ -17,7 +17,7 @@
         }
     ],
     "require": {
-        "php": ">=7.1.0",
+        "php": ">=8.1.0",
         "ext-swoole": ">=4.4.7",
         "ext-json": "*",
         "easyswoole/component": "^2.0",
