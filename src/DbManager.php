@@ -3,197 +3,258 @@
 namespace EasySwoole\ORM;
 
 use EasySwoole\Component\Singleton;
-use EasySwoole\Mysqli\Config;
 use EasySwoole\Mysqli\QueryBuilder;
-use EasySwoole\ORM\Db\MysqlClient;
-use EasySwoole\ORM\Db\Pool;
-use EasySwoole\ORM\Db\QueryResult;
-use EasySwoole\ORM\Exception\PoolError;
-use EasySwoole\Pool\AbstractPool;
+use EasySwoole\ORM\Db\ClientInterface;
+use EasySwoole\ORM\Db\ConnectionInterface;
+use EasySwoole\ORM\Db\Result;
+use EasySwoole\ORM\Exception\Exception;
+use EasySwoole\Pool\Exception\PoolEmpty;
 use Swoole\Coroutine;
-use Swoole\Coroutine\Scheduler;
-use Swoole\Timer;
 
+/**
+ * Class DbManager
+ * @package EasySwoole\ORM
+ */
 class DbManager
 {
     use Singleton;
 
-    /** @var callable|null */
-    private $onQuery;
+    protected $connections = [];
+    protected $transactionContext = [];
+    protected $onQuery;
 
-    protected $config = [];
-    protected $pool = [];
-    /** @var callable|null */
-    protected $onSecureEvent;
-
-    function __construct()
+    public function onQuery(callable $call):DbManager
     {
-        $this->onSecureEvent = function (array $traces,ConnectionConfig $config){
-            echo "connectionName [{$config->getName()}] for {$config->getHost()}:{$config->getPort()}@{$config->getUser()} may has un commit transaction or un release table lock:\n";
-            /** @var QueryBuilder $trace */
-            foreach ($traces as $trace){
-                echo "\t".$trace->getLastQuery()."\n";
-            }
-        };
-    }
-
-    function onSecureEvent(?callable $call = null):?callable
-    {
-        if($call != null){
-            $this->onSecureEvent = $call;
-        }
-        return $this->onSecureEvent;
-    }
-
-    function addConnection(ConnectionConfig $config):DbManager
-    {
-        $this->config[$config->getName()] = $config;
+        $this->onQuery = $call;
         return $this;
     }
 
-    function connectionConfig(string $connectionName = "default"):ConnectionConfig
+    function addConnection(ConnectionInterface $connection,string $connectionName = 'default'):DbManager
     {
-        if(isset($this->config[$connectionName])){
-            return $this->config[$connectionName];
-        }else{
-            throw new PoolError("connection: {$connectionName} did not register yet");
-        }
+        $this->connections[$connectionName] = $connection;
+        return $this;
     }
 
-    function setOnQuery(?callable $func = null):?callable
+    function getConnection(string $connectionName = 'default'):?ConnectionInterface
     {
-        if($func){
-            $this->onQuery = $func;
+        if(isset($this->connections[$connectionName])){
+            return $this->connections[$connectionName];
         }
-        return $this->onQuery;
+        return null;
     }
 
-    function fastQuery(?string $connectionName = "default"):QueryExecutor
+    /**
+     * @param QueryBuilder $builder
+     * @param bool $raw
+     * @param string|ClientInterface $connection
+     * @param float|null $timeout
+     * @return Result
+     * @throws Exception
+     * @throws \Throwable
+     */
+    function query(QueryBuilder $builder, bool $raw = false, $connection = 'default', float $timeout = null):Result
     {
-        if(isset($this->config[$connectionName])){
-            return (new QueryExecutor())->setConnectionConfig($this->config[$connectionName]);
-        }else{
-            throw new PoolError("connection: {$connectionName} did not register yet");
-        }
-    }
-
-    function invoke(callable $call,string $connectionName = "default",float $timeout = null)
-    {
-        if($timeout == null){
-            $this->config[$connectionName]->getTimeout();
-        }
-        $obj = $this->getConnectionPool($connectionName)->getObj($timeout);
-        if($obj){
-            try{
-                return call_user_func($call,$obj);
-            }catch (\Throwable $exception){
-                throw $exception;
-            }finally {
-                $this->getConnectionPool($connectionName)->recycleObj($obj);
+        if(is_string($connection)){
+            $conTemp = $this->getConnection($connection);
+            if(!$conTemp){
+                throw new Exception("connection : {$connection} not register");
+            }
+            $client = $conTemp->defer($timeout);
+            if(empty($client)){
+                throw new PoolEmpty("connection : {$connection} is empty");
             }
         }else{
-            throw new PoolError("connection: {$connectionName} getObj() timeout,pool may be empty");
+            $client = $connection;
         }
-    }
 
-    function defer(string $connectionName = "default",?float $timeout = null):MysqlClient
-    {
-        $obj = $this->getConnectionPool($connectionName)->defer($timeout);
-        if($obj){
-            return $obj;
-        }else{
-            throw new PoolError("connection: {$connectionName} defer() timeout,pool may be empty");
-        }
-    }
-
-    function __exec(MysqlClient $client,QueryBuilder $builder,bool $raw = false,?float $timeout = null):QueryResult
-    {
         $start = microtime(true);
-        $result = $client->execQueryBuilder($builder,$raw,$timeout);
+        $ret = $client->query($builder,$raw);
         if($this->onQuery){
             $temp = clone $builder;
-            call_user_func($this->onQuery,$result,$temp,$start,$client);
+            call_user_func($this->onQuery,$ret,$temp,$start);
         }
         if(in_array('SQL_CALC_FOUND_ROWS',$builder->getLastQueryOptions())){
             $temp = new QueryBuilder();
             $temp->raw('SELECT FOUND_ROWS() as count');
-            $count = $client->execQueryBuilder($temp,false,$timeout);
+            $count = $client->query($temp,true);
             if($this->onQuery){
                 call_user_func($this->onQuery,$count,$temp,$start,$client);
             }
-            $result->setTotalCount($count->getResult()[0]['count']);
+            $ret->setTotalCount($count->getResult()[0]['count']);
         }
-        return $result;
+        return $ret;
     }
 
 
-    public function startTransaction(?MysqlClient $client = null):bool
+    function invoke(callable $call,string $connectionName = 'default',float $timeout = null)
     {
-        $query = new QueryBuilder();
-        $query->raw('start transaction');
-        if($client == null){
-            $client = $this->defer();
+        $connection = $this->getConnection($connectionName);
+        if($connection){
+            $client = $connection->getClientPool()->getObj($timeout);
+            if($client){
+                try{
+                    return call_user_func($call,$client);
+                }catch (\Throwable $exception){
+                    throw $exception;
+                }finally{
+                    $connection->getClientPool()->recycleObj($client);
+                }
+            }else{
+                throw new PoolEmpty("connection : {$connectionName} is empty");
+            }
+        }else{
+            throw new Exception("connection : {$connectionName} not register");
         }
-        return $this->__exec($client,$query,true)->getResult();
     }
 
-    public function commit(?MysqlClient $client = null):bool
+    /**
+     * @param string|ClientInterface|array<string>|array<ClientInterface> $connections
+     * @return bool
+     * @throws Exception
+     * @throws \Throwable
+     */
+    public function startTransaction($connections = 'default'):bool
     {
-        $query = new QueryBuilder();
-        $query->raw('commit');
-        if($client == null){
-            $client = $this->defer();
+        if ($connections instanceof ClientInterface){
+            $builder = new QueryBuilder();
+            $builder->startTransaction();
+            $res = $this->query($builder, true,$connections);
+            if ($res->getResult() !== true){
+                return false;
+            }
+            return true;
         }
-        return $this->__exec($client,$query,true)->getResult();
-    }
 
-    public function rollback(?MysqlClient $client = null):bool
-    {
-        $query = new QueryBuilder();
-        $query->raw("rollback");
-        if($client == null){
-            $client = $this->defer();
+        if(!is_array($connections)){
+            $connections = [$connections];
         }
-        return $this->__exec($client,$query,true)->getResult();
-    }
-
-
-
-    function resetPool(bool $clearTimer = true)
-    {
-        /**
-         * @var  $key
-         * @var AbstractPool $pool
+        /*
+         * 1、raw执行 start transaction
+         * 2、若全部链接执行成功，则往transactionContext 标记对应协程的成功事务，并注册一个defer自动执行回滚,防止用户忘了提交导致死锁
+         * 3、若部分链接成功，则成功链接执行rollback
          */
-        foreach ($this->pool as $key => $pool){
-            $pool->reset();
+        $cid = Coroutine::getCid();
+        foreach ($connections as $name) {
+            $builder = new QueryBuilder();
+            $builder->starTtransaction();
+            $res = $this->query($builder,true,$name);
+            if ($res->getResult() === true){
+                $this->transactionContext[$cid][] = $name;
+            }else{
+                $this->rollback();
+                return false;
+            }
         }
-        $this->pool = [];
-        if($clearTimer){
-            Timer::clearAll();
-        }
-    }
 
-    function runInMainProcess(callable $func,bool $clearTimer = true)
-    {
-        $scheduler = new Scheduler();
-        $scheduler->add(function ()use($func,$clearTimer){
-            $func($this);
-            $this->resetPool($clearTimer);
+        Coroutine::defer(function (){
+            $cid = Coroutine::getCid();
+            if(isset($this->transactionContext[$cid])){
+                $this->rollback();
+            }
         });
-        $scheduler->start();
-
+        return true;
     }
 
-    private function getConnectionPool(string $connectionName):Pool
+    public function commit($connectName = NULL):bool
     {
-        if(isset($this->pool[$connectionName])){
-            return $this->pool[$connectionName];
+        if ($connectName instanceof ClientInterface){
+            $builder = new QueryBuilder();
+            $builder->commit();
+            $res = $this->query($builder, true,$connectName);
+            if ($res->getResult() !== true){
+                return false;
+            }
+            return true;
         }
-        $conf = $this->connectionConfig($connectionName);
-        $pool = new Pool($conf);
-        $this->pool[$connectionName] = $pool;
-        return $pool;
+
+        $cid = Coroutine::getCid();
+        if(isset($this->transactionContext[$cid])){
+            // 如果有指定
+            if ($connectName !== NULL){
+                $builder = new QueryBuilder();
+                $builder->commit();
+                $res = $this->query($builder,true,$connectName);
+                if ($res->getResult() !== true){
+                    $this->rollback($connectName);
+                    return false;
+                }
+                $this->clearTransactionContext($connectName);
+                return true;
+            }
+            foreach ($this->transactionContext[$cid] as $name){
+                $builder = new QueryBuilder();
+                $builder->commit();
+                $res = $this->query($builder, true,$name);
+                if ($res->getResult() !== true){
+                    $this->rollback($name);
+                    return false;
+                }
+            }
+            $this->clearTransactionContext();
+            return true;
+        }
+        return false;
+    }
+
+
+    public function rollback($connectName = NULL):bool
+    {
+        if ($connectName instanceof ClientInterface){
+            $builder = new QueryBuilder();
+            $builder->rollback();
+            $res = $this->query($builder, true,$connectName);
+            if ($res->getResult() !== true){
+                return false;
+            }
+            return true;
+        }
+
+        $cid = Coroutine::getCid();
+        if(isset($this->transactionContext[$cid])){
+            // 如果有指定
+            if ($connectName !== NULL){
+                $builder = new QueryBuilder();
+                $builder->rollback();
+                $res = $this->query($builder, true,$connectName);
+                if ($res->getResult() !== true){
+                    return false;
+                }
+                $this->clearTransactionContext($connectName);
+                return true;
+            }
+            foreach ($this->transactionContext[$cid] as $name){
+                $builder = new QueryBuilder();
+                $builder->rollback();
+                $res = $this->query($builder, true,$name);
+                if ($res->getResult() !== true){
+                    return false;
+                }
+            }
+            $this->clearTransactionContext();
+            return true;
+        }
+        return false;
+    }
+
+    protected function clearTransactionContext($connectName = null)
+    {
+        $cid = Coroutine::getCid();
+        if (!isset($this->transactionContext[$cid])){
+            return false;
+        }
+
+        if ($connectName !== null){
+            foreach ($this->transactionContext[$cid] as $key => $name){
+                if ($name === $connectName){
+                    unset($this->transactionContext[$cid][$key]);
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        unset($this->transactionContext[$cid]);
+        return true;
     }
 
 }

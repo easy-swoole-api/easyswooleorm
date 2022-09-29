@@ -1,42 +1,21 @@
 <?php
 
-namespace EasySwoole\ORM;
 
-use EasySwoole\Pool\Config;
+namespace EasySwoole\ORM\Db;
 
 
-class ConnectionConfig extends Config
+class Config extends \EasySwoole\Pool\Config
 {
-    /**
-     * @var string
-     */
-    protected $name = "default";
-
     protected $host;
     protected $user;
     protected $password;
     protected $database;
     protected $port = 3306;
-    protected $timeout = 45;
+    protected $timeout = 30;
     protected $charset = 'utf8';
-    protected $autoPing = 5;
 
-
-    /**
-     * @return string
-     */
-    public function getName(): string
-    {
-        return $this->name;
-    }
-
-    /**
-     * @param string|null $name
-     */
-    public function setName(?string $name): void
-    {
-        $this->name = $name;
-    }
+    protected $strict_type = false; // 开启严格模式，返回的字段将自动转为数字类型
+    protected $fetch_mode = false;
 
     /**
      * @return mixed
@@ -48,10 +27,12 @@ class ConnectionConfig extends Config
 
     /**
      * @param mixed $host
+     * @return Config
      */
-    public function setHost($host): void
+    public function setHost($host): Config
     {
         $this->host = $host;
+        return $this;
     }
 
     /**
@@ -64,10 +45,12 @@ class ConnectionConfig extends Config
 
     /**
      * @param mixed $user
+     * @return Config
      */
-    public function setUser($user): void
+    public function setUser($user): Config
     {
         $this->user = $user;
+        return $this;
     }
 
     /**
@@ -80,10 +63,12 @@ class ConnectionConfig extends Config
 
     /**
      * @param mixed $password
+     * @return Config
      */
-    public function setPassword($password): void
+    public function setPassword($password): Config
     {
         $this->password = $password;
+        return $this;
     }
 
     /**
@@ -96,10 +81,12 @@ class ConnectionConfig extends Config
 
     /**
      * @param mixed $database
+     * @return Config
      */
-    public function setDatabase($database): void
+    public function setDatabase($database): Config
     {
         $this->database = $database;
+        return $this;
     }
 
     /**
@@ -112,10 +99,12 @@ class ConnectionConfig extends Config
 
     /**
      * @param int $port
+     * @return Config
      */
-    public function setPort(int $port): void
+    public function setPort(int $port): Config
     {
         $this->port = $port;
+        return $this;
     }
 
     /**
@@ -128,10 +117,12 @@ class ConnectionConfig extends Config
 
     /**
      * @param int $timeout
+     * @return Config
      */
-    public function setTimeout(int $timeout): void
+    public function setTimeout(int $timeout): Config
     {
         $this->timeout = $timeout;
+        return $this;
     }
 
     /**
@@ -144,28 +135,47 @@ class ConnectionConfig extends Config
 
     /**
      * @param string $charset
+     * @return Config
      */
-    public function setCharset(string $charset): void
+    public function setCharset(string $charset): Config
     {
         $this->charset = $charset;
+        return $this;
     }
 
     /**
-     * @return int
+     * @return bool
      */
-    public function getAutoPing(): int
+    public function isStrictType(): bool
     {
-        return $this->autoPing;
+        return $this->strict_type;
     }
 
     /**
-     * @param int $autoPing
+     * @param bool $strict_type
+     * @return Config
      */
-    public function setAutoPing(int $autoPing): void
+    public function setStrictType(bool $strict_type): Config
     {
-        $this->autoPing = $autoPing;
+        $this->strict_type = $strict_type;
+        return $this;
     }
 
+    /**
+     * @return bool
+     */
+    public function isFetchMode(): bool
+    {
+        return $this->fetch_mode;
+    }
 
-
+    /**
+     * @param bool $fetch_mode
+     * @return Config
+     */
+    public function setFetchMode(bool $fetch_mode): Config
+    {
+        $this->fetch_mode = $fetch_mode;
+        return $this;
+    }
 }
